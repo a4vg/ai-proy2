@@ -216,28 +216,30 @@ class Structure():
     best_score = metric(factors=self.b.matrix_dict2factors(best), **metric_params)
 
     seen_cases = 0
-    candidate = copy.deepcopy(best)
-    for v1_i in range(len(vars)):
-      v1 = vars[v1_i]
-      for v2_i in range(v1_i+1, len(vars)):
-        v2 = vars[v2_i]
-        cand_score = -9999
-        to_reverse = []
-        for op_i, op in enumerate(operators):
-          seen_cases+=1
-          if verbosed and seen_cases%10==0:
-            print(f"{seen_cases} cases seen. Best score: {best_score}\nStructure: {best}\n")
-          if op(candidate, v1, v2):
-            cand_score = max(cand_score, metric(factors=self.b.matrix_dict2factors(candidate), **metric_params))
-        if cand_score>best_score:
-          print("Changing", best_score, "with", cand_score)
-          best_score = cand_score
-          best = copy.deepcopy(candidate)
-        else:
-          # Not progress
-          print("Candidate failed", cand_score)
-          if max_seen_cases==-1 or seen_cases>=max_seen_cases:
-            return best, best_score, seen_cases
+    while progress or (max_seen_cases!=-1 and seen_cases>=max_seen_cases):
+      candidate = copy.deepcopy(best)
+      for v1_i in range(len(vars)):
+        v1 = vars[v1_i]
+        for v2_i in range(v1_i+1, len(vars)):
+          v2 = vars[v2_i]
+          cand_score = -9999
+          for op_i, op in enumerate(operators):
+            seen_cases+=1
+            if verbosed and seen_cases%10==0:
+              print(f"{seen_cases} cases seen. Best score: {best_score}\nStructure: {best}\n")
+            if op(candidate, v1, v2):
+              cand_score = max(cand_score, metric(factors=self.b.matrix_dict2factors(candidate), **metric_params))
+          if cand_score>best_score:
+            print("Changing", best_score, "with", cand_score)
+            best_score = cand_score
+            best = copy.deepcopy(candidate)
+            progress = True
+          else:
+            # Not progress
+            progress = False
+            print("Candidate failed", cand_score)
+            if max_seen_cases==-1 or seen_cases>=max_seen_cases:
+              return best, best_score, seen_cases
             
     return best, best_score, seen_cases
 
@@ -466,7 +468,7 @@ df = pd.read_csv(sys.argv[1], dtype=str)
 
 # Structure search with greedy
 bayes = BayesNetwork(df)
-structure, score, seen = bayes.bestStructure(metric="entropy", algorithm="greedy", metric_params={"alpha": 1}, algorithm_params={"verbosed": True, "visit_space": .25})
+structure, score, seen = bayes.bestStructure(metric="AIC", algorithm="greedy", metric_params={"alpha": 1}, algorithm_params={"verbosed": True, "visit_space": .25})
 
 print("Best structure:", structure)
 print("Score:", score)
