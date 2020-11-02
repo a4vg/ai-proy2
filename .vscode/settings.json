@@ -1,0 +1,6 @@
+{
+    "python.pythonPath": "/Users/andrea/.local/share/virtualenvs/ai-proy2-l8ZCulhG/bin/python",
+    "python.linting.pylintEnabled": false,
+    "python.linting.enabled": true,
+    "python.linting.flake8Enabled": true
+}
