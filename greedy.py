@@ -216,7 +216,7 @@ class Structure():
     best_score = metric(factors=self.b.matrix_dict2factors(best), **metric_params)
 
     seen_cases = 0
-    candidate = best
+    candidate = copy.deepcopy(best)
     for v1_i in range(len(vars)):
       v1 = vars[v1_i]
       for v2_i in range(v1_i+1, len(vars)):
@@ -232,8 +232,10 @@ class Structure():
         if cand_score>best_score:
           print("Changing", best_score, "with", cand_score)
           best_score = cand_score
+          best = copy.deepcopy(candidate)
         else:
           # Not progress
+          print("Candidate failed", cand_score)
           if max_seen_cases==-1 or seen_cases>=max_seen_cases:
             return best, best_score, seen_cases
             
