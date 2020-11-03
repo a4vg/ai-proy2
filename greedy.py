@@ -1,19 +1,22 @@
 import io
+import pandas as pd
+import numpy as np
 import itertools
 import copy
 import math
-import sys
-# must install
-import pandas as pd
-import numpy as np
+import csv
 
+#@title Bayes Network Class
 class BayesNetwork():
-  def __init__(self, df, matrix=None, matrix_dict=None):
+  def __init__(self, df, matrix=None, matrix_dict=None, factors=None):
     self.df = df
     self.M = len(df.index)
     self.vars = {name: Var(name, df) for name in df} # Diccionario con { name: Var(name) }
     self.structure = Structure(self)
-    if matrix is not None and matrix_dict is not None:
+    if factors is not None:
+      self.matrix_dict = self.factors2matrix_dict(factors)
+      self.factors = factors
+    elif matrix is not None or matrix_dict is not None:
       self.matrix_dict = matrix_dict if matrix_dict else self.matrix2dict(matrix)
       self.factors = self.matrix_dict2factors(self.matrix_dict) # dict of P objects
 
@@ -32,13 +35,19 @@ class BayesNetwork():
     for X, Y in matrix_dict.items():
       factors[X] = P(self.df, X, list(Y))
     return factors
+  
+  def factors2matrix_dict(self,factors):
+    m = {}
+    for f in factors.values(): m[f.X] = set(f.Y)
+    return m
 
   def topologicalSortUtil(self, i,var, visited, stack): 
     visited[i] = True
-    for j,parent in enumerate(self.parents[var]): 
+    for j,parent in enumerate(self.matrix_dict[var]): 
       if visited[j] == False: 
         self.topologicalSortUtil(j,parent, visited, stack)
     stack.append(var) 
+
 
   def topologicalSort(self,vars):
     visited = [False]*len(vars)
@@ -52,14 +61,14 @@ class BayesNetwork():
     factors = {",".join(f.vars): copy.deepcopy(f) for f in self.factors.values()}
 
     hidden_vars = [v for v in self.df if v not in variables and v!=target]
-    # TODO: order l_eliminate
+    hidden_vars = self.topologicalSort(hidden_vars)
 
     # Reduce factor tables if some values are known
     for factor in factors.values():
       selected = {var:val for var, val in zip(variables, values) if var in factor.vars}
       if selected:
         factor.filterDistribution(selected.keys(), selected.values(), alpha, replace=True)
-    
+
     for v in hidden_vars:
       factors = self.eliminate_var(v, factors)
 
@@ -68,7 +77,7 @@ class BayesNetwork():
     for factor in iterfactors:
       prediction = prediction.product(factor)
 
-    return prediction.dist_table[0][[target, "P"]].groupby(target).sum().reset_index()
+    return prediction.distribution() #[[target, "P"]].groupby(target).sum().reset_index()
 
   def eliminate_var(self, to_eliminate, factors):
     factors_with_eliminate = {}
@@ -84,11 +93,13 @@ class BayesNetwork():
     for factor in iterfactors:
       new_factor = new_factor.product(factor)
     
-    new_factor.marginalization(to_eliminate)
+    if new_factor.distribution().columns.drop(["P", to_eliminate]).empty:
+      return factors_without_eliminate
+    new_factor = new_factor.marginalization(to_eliminate) ###
 
     new_factor_key = ",".join(new_factor.vars)
     if new_factor_key in factors_without_eliminate:
-      new_factor.dist_table[0] = new_factor.product(factors_without_eliminate[new_factor_key])
+      new_factor = new_factor.product(factors_without_eliminate[new_factor_key])
     
     # factors_without_eliminate U new_factor
     factors_without_eliminate[new_factor_key] = new_factor
@@ -107,24 +118,24 @@ class BayesNetwork():
     return getattr(self.structure, algorithm+"_algorithm")(metric=metric_func, metric_params=metric_params, **algorithm_params)
 
 
-
+#@title Structure Class
 class Structure():
   def __init__(self, bayes):
     self.b = bayes
-
-  # Metrics
+  
+# Metrics
   def entropy_metric(self, factors=None, alpha=1):
-    if factors is None: factors = self.b.factors
+    if factors is None:
+      factors = self.b.factors
 
     logE = 0
     # iterar sobre variables
     for f in factors.values():
       # obtener las variables del factor de la variable
-      f_vars = list(f.vars.keys())
+      f_vars = f.vars.keys()
       f_vals_combinations = itertools.product(*[v.values() for v in f.vars.values()])
       # iterar sobre valores que pueden tomar las variables del factor
       for f_vals in f_vals_combinations:
-        f_vals = list(f_vals)
         prob = f.probability(f_vars, f_vals, scalar=True)
         join_prob = f.join_probability(f_vals)
         # m = Var.M(self.b.df, f_vars, f_vals)
@@ -151,7 +162,9 @@ class Structure():
       k += (f.vars[f.X].card()-1)*qi
     return k
 
-  def K2_metric(self,var,parents):
+  def K2_metric(self,p):
+    var=p.X
+    parents=p.Y
     total = 1
     if(len(parents)>0):
       parents_comb  = itertools.product(*[self.b.vars[p].values() for p in parents])
@@ -173,31 +186,45 @@ class Structure():
 
     return total
 
-  # Search algoritms
-  def K2_algorithm(self, metric, max_parents, metric_params={}):
-    nodes = list(self.b.vars.keys())
-    struct=[]
+# Search algoritms
+  def K2_algorithm(self, metric, max_parents, nodes_order=None, metric_params={}):
+    total_spaces = [1,1,3,25,543,29281,3781503,1138779265,
+ 783702329343,1213442454842881,4175098976430598143,
+ 31603459396418917607425,
+ 521939651343829405020504063,
+ 18676600744432035186664816926721,
+ 1439428141044398334941790719839535103]
+    if nodes_order is None:
+      nodes = list(self.b.vars.keys())
+    else:
+      nodes = nodes_order
+    struct={}
+    steps=0
     for i in range(len(nodes)):
-      struct.append([])
-      Po = metric(nodes[i],struct[i]) if self.K2_metric == metric else metric(struct[i], **metric_params)
+      struct[nodes[i]]=P(self.b.df,nodes[i],[])
+      Po = metric(struct[nodes[i]]) if self.K2_metric == metric else metric(factors=struct, **metric_params) 
       proceed = True
-      while(proceed and len(struct[i])<max_parents):
+      previ=[x for x in range(i)]
+      while(proceed and len(struct[nodes[i]].Y)<max_parents):
+        
         maxP=0
         maxi=0
-        for zi in range(i):
-          temp_struct = struct[i].copy()
-          temp_struct.append(nodes[zi])
-          Pn=metric(nodes[i],temp_struct) if self.K2_metric == metric else metric(temp_struct, **metric_params)
+        for zi in previ:
+          steps+=1
+          temp_struct = copy.deepcopy(struct)
+          temp_struct[nodes[i]]=P(self.b.df,nodes[i],temp_struct[nodes[i]].Y+[nodes[zi]])
+          Pn=metric(temp_struct[nodes[i]]) if self.K2_metric == metric else metric(factors=temp_struct, **metric_params)
           if(Pn>maxP):
             maxP=Pn
             maxi=zi
         if(maxP>Po):
           Po=maxP
-          struct[i].append(nodes[maxi])
+          struct[nodes[i]]=P(self.b.df,nodes[i],struct[nodes[i]].Y+[nodes[maxi]])
+          previ.remove(maxi)
         else:
           proceed = False
-      
-    return struct, Po
+    p_visited=(100*steps)/total_spaces[len(nodes)]
+    return struct, Po , p_visited
 
   def greedy_algorithm(self, metric, start_unconnected=True, verbosed=True, visit_space=None, metric_params={}):
     vars = list(self.b.vars.keys())
@@ -210,37 +237,29 @@ class Structure():
     if visit_space is not None:
       total_space = math.pow(2, (len(vars)*(len(vars)-1)))
       max_seen_cases = total_space*visit_space
-      print("Total:",total_space)
-      print(max_seen_cases)
 
     best_score = metric(factors=self.b.matrix_dict2factors(best), **metric_params)
 
     seen_cases = 0
-    progress = True
-    while progress or (max_seen_cases!=-1 and seen_cases>=max_seen_cases):
-      candidate = copy.deepcopy(best)
-      for v1_i in range(len(vars)):
-        v1 = vars[v1_i]
-        for v2_i in range(v1_i+1, len(vars)):
-          v2 = vars[v2_i]
-          cand_score = -9999
-          for op_i, op in enumerate(operators):
-            seen_cases+=1
-            if verbosed and seen_cases%10==0:
-              print(f"{seen_cases} cases seen. Best score: {best_score}\nStructure: {best}\n")
-            if op(candidate, v1, v2):
-              cand_score = max(cand_score, metric(factors=self.b.matrix_dict2factors(candidate), **metric_params))
-          if cand_score>best_score:
-            print("Changing", best_score, "with", cand_score)
-            best_score = cand_score
-            best = copy.deepcopy(candidate)
-            progress = True
-          else:
-            # Not progress
-            progress = False
-            print("Candidate failed", cand_score)
-            if max_seen_cases==-1 or seen_cases>=max_seen_cases:
-              return best, best_score, seen_cases
+    candidate = best
+    for v1_i in range(len(vars)):
+      v1 = vars[v1_i]
+      for v2_i in range(v1_i+1, len(vars)):
+        v2 = vars[v2_i]
+        cand_score = -9999
+        to_reverse = []
+        for op_i, op in enumerate(operators):
+          seen_cases+=1
+          if verbosed and seen_cases%10==0:
+            print(f"{seen_cases} cases seen. Best score: {best_score}\nStructure: {best}\n")
+          if op(candidate, v1, v2):
+            cand_score = max(cand_score, metric(factors=self.b.matrix_dict2factors(candidate), **metric_params))
+        if cand_score>best_score:
+          best_score = cand_score
+        else:
+          # Not progress
+          if max_seen_cases==-1 or seen_cases>=max_seen_cases:
+            return best, best_score, seen_cases
             
     return best, best_score, seen_cases
 
@@ -274,9 +293,7 @@ class Structure():
       return False
     
 
-
-
-
+#@title Probability Class
 class P():
   def __init__(self, df=None, X=None, Y=[]):
     self.X = X
@@ -291,12 +308,12 @@ class P():
 
   def __str__(self):
      return f"P({self.X}|{','.join(self.Y)})" if self.Y else f"P({self.X})"
-
+  
   def __repr__(self):
      return str(self)
 
-  def filterDistribution(self, variables, values, alpha=1, replace=False):
-    dist = self.distribution(alpha)
+  def filterDistribution(self, variables, values, alpha=1, replace=False, forceRecalc=False):
+    dist = self.distribution(alpha, forceRecalc)
     query = " & ".join(f"{var}=='{val}'" for var, val in zip(variables, values))
 
     filtered = dist.query(query)
@@ -335,13 +352,13 @@ class P():
 
     return self.joindist_table[0]
 
-  def probability(self, variables, values, alpha=1, scalar=False):
+  def probability(self, variables, values, alpha=1, scalar=False, forceRecalc=False):
     # If scalar = False: Returns a dataframe with one row
     # If scalar = True: Returns the probability as a float
 
     assert len(variables) == len(values), "Must provide same number of variables and values"
 
-    filteredDist = self.filterDistribution(variables, values, alpha)
+    filteredDist = self.filterDistribution(variables, values, alpha, forceRecalc)
     return filteredDist["P"].item() if scalar else filteredDist
 
   def join_probability(self, values, variables=[], alpha=1):
@@ -354,7 +371,7 @@ class P():
 
     return dist.query(query)["P"].item()
 
-
+  
   def dist_margin(self, alpha):
     # (M[var=val]+α) / (M+α*card(var))
     variable = self.vars[self.X]
@@ -411,6 +428,7 @@ class P():
       scalar = dfP1["P"].item()
       df = dfP2
     else:
+      display()
       scalar = dfP2["P"].item()
       df = dfP1
     df["P"] *= float(scalar)
@@ -423,7 +441,7 @@ class P():
 
 
 
-
+#@title T class
 class T(P):
   def __init__(self, table, alpha):
     self.dist_table = [table, alpha]
@@ -437,11 +455,17 @@ class T(P):
 
 
 
-
+#@title Variable class
 class Var():
   def __init__(self, name, df):
     self.name = name
     self.df = df
+
+  def __str__(self):
+    return self.name
+
+  def __repr__(self):
+     return str(self)
   
   def values(self):
     # valores que puede tomar la variable
@@ -464,27 +488,54 @@ class Var():
 
 
 
+def call_k2(m, max_p, nodes_order):
+  if m == "K2":
+    return bayes.bestStructure(
+        metric=m,
+        algorithm="K2",
+        algorithm_params={"max_parents": max_p}
+      )
+  else:
+    return bayes.bestStructure(
+        metric=m,
+        metric_params={"alpha": slider.value},
+        algorithm="K2",
+        algorithm_params={
+            "max_parents": max_p,
+            "nodes_order": nodes_order
+          })
 
-df = pd.read_csv(sys.argv[1], dtype=str)
-
-# Structure search with greedy
-bayes = BayesNetwork(df)
-structure, score, seen = bayes.bestStructure(metric="AIC", algorithm="greedy", metric_params={"alpha": 1}, algorithm_params={"verbosed": True, "visit_space": .25})
-
-print("Best structure:", structure)
-print("Score:", score)
-print(f"{seen} cases seen")
+spaces = [1,1,3,25,543,29281,3781503,1138779265,
+ 783702329343,1213442454842881,4175098976430598143,
+ 31603459396418917607425,
+ 521939651343829405020504063,
+ 18676600744432035186664816926721,
+ 1439428141044398334941790719839535103]
 
 
+visit_space = .25
+vars_order = ["A", "B", "C", "D", "E", "F", "G"]
+metric = "K2"
+verb_checkbox = True
+matrix = [[0]*7 for i in range(7)]
+
+#@title Inicializar Red Bayesiana
+bayes = BayesNetwork(pd.read_csv("dataset.csv", dtype=str), matrix=matrix)
+
+to_visit = spaces[len(bayes.vars)]*visit_space
+visited_space = 0
+m=len(bayes.vars)-1
+for permutation in list(itertools.permutations(vars_order)):
+  print("Trying permutation:", permutation)
+  factors, score, vis = call_k2(metric, m, permutation)
+  visited_space+=vis
+  if verb_checkbox:
+    print(f"Porcentaje de espacio visitado: {visited_space}")
+    print(f"Mejor estructura: {factors} con puntaje {score}")
+  if visited_space>=to_visit:
+    break
 
 
-
-
-
-
-
-
-
-
-
-
+print("Puntaje:", score)
+print("Estructura:", factors)
+print("Vistos:", visited_space)
