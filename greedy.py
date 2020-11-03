@@ -489,21 +489,11 @@ class Var():
 
 
 def call_k2(m, max_p, nodes_order):
-  if m == "K2":
-    return bayes.bestStructure(
-        metric=m,
-        algorithm="K2",
-        algorithm_params={"max_parents": max_p}
-      )
-  else:
-    return bayes.bestStructure(
-        metric=m,
-        metric_params={"alpha": slider.value},
-        algorithm="K2",
-        algorithm_params={
-            "max_parents": max_p,
-            "nodes_order": nodes_order
-          })
+  return bayes.bestStructure(
+      metric=m,
+      algorithm="K2",
+      algorithm_params={"max_parents": max_p, "nodes_order": nodes_order}
+    )
 
 spaces = [1,1,3,25,543,29281,3781503,1138779265,
  783702329343,1213442454842881,4175098976430598143,
@@ -522,20 +512,36 @@ matrix = [[0]*7 for i in range(7)]
 #@title Inicializar Red Bayesiana
 bayes = BayesNetwork(pd.read_csv("dataset.csv", dtype=str), matrix=matrix)
 
-to_visit = spaces[len(bayes.vars)]*visit_space
-visited_space = 0
-m=len(bayes.vars)-1
-for permutation in list(itertools.permutations(vars_order)):
-  print("Trying permutation:", permutation)
-  factors, score, vis = call_k2(metric, m, permutation)
-  visited_space+=vis
-  if verb_checkbox:
-    print(f"Porcentaje de espacio visitado: {visited_space}")
-    print(f"Mejor estructura: {factors} con puntaje {score}")
-  if visited_space>=to_visit:
-    break
+with open("output.txt", "w") as file:
+  to_visit = spaces[len(bayes.vars)]*visit_space
+  visited_space = 0
+  m=len(bayes.vars)-1
+  c = 0
+  best_score = -999
+  for permutation in list(itertools.permutations(vars_order)):
+    c+=1
+    file.write(f"[{c}]Trying permutation: {permutation}\n")
+    print(f"[{c}] Trying permutation:", permutation)
+    factors, score, vis = call_k2(metric, m, permutation)
+    visited_space+=vis
+    if score>best_score:
+      best_score = score
+      best_factor = factors
+      
+    if verb_checkbox: 
+      file.write(f"Porcentaje de espacio visitado: {visited_space}\n")
+      file.write(f"Mejor estructura: {best_factor} con puntaje {best_score}\n\n")
+      print(f"Porcentaje de espacio visitado: {visited_space}")
+      print(f"Mejor estructura: {best_factor} con puntaje {best_score}")
+    if visited_space>=to_visit:
+      break
+ 
+  file.write("ESTRUCTURA ENCONTRADA\n")
+  file.write(f"Puntaje: {best_score}\n")
+  file.write(f"Estructura: {best_factor}\n")
+  file.write(f"Vistos: {visited_space}")
 
-
-print("Puntaje:", score)
-print("Estructura:", factors)
-print("Vistos:", visited_space)
+  print("ESTRUCTURA ENCONTRADA")
+  print("Puntaje:", best_score)
+  print("Estructura:", best_factor)
+  print("Vistos:", visited_space)
